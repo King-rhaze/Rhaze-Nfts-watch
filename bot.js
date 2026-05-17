@@ -1,5 +1,3 @@
-import https from "https";
-import http from "http";
 import { config } from "dotenv";
 
 config();
@@ -9,62 +7,39 @@ const CONFIG = {
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
   POLL_INTERVAL_MS: 20000,
   BLOCKS_PER_SCAN: 3,
-  // Free public Ethereum RPC - no API key needed
-  RPC_URL: "https://eth.llamarpc.com",
 };
 
 console.log("🔑 TELEGRAM_BOT_TOKEN:", CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_BOT_TOKEN.slice(0,6) + "..." : "❌ NOT FOUND");
 console.log("🔑 TELEGRAM_CHAT_ID:", CONFIG.TELEGRAM_CHAT_ID || "❌ NOT FOUND");
-console.log("🌐 RPC:", CONFIG.RPC_URL);
 
 const NFT_SIGNATURES = { ERC721: "80ac58cd", ERC1155: "d9b67a26" };
 let lastScannedBlock = null;
 const notifiedContracts = new Set();
 
-// ── JSON-RPC call to public Ethereum node ────────────────────────────────────
-function rpc(method, params = []) {
-  const body = JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 });
-  return new Promise((resolve, reject) => {
-    const url = new URL(CONFIG.RPC_URL);
-    const req = https.request({
-      hostname: url.hostname,
-      path: url.pathname,
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
-    }, (res) => {
-      let data = "";
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(new Error("JSON parse error: " + data.slice(0, 100))); }
-      });
-    });
-    req.on("error", reject);
-    req.write(body);
-    req.end();
+// ── fetch-based RPC (works on Railway) ───────────────────────────────────────
+async function rpc(method, params = []) {
+  const res = await fetch("https://cloudflare-eth.com/v1/mainnet", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
   });
+  return res.json();
 }
 
-// ── Telegram ─────────────────────────────────────────────────────────────────
-function sendTelegram(message) {
-  const body = JSON.stringify({ chat_id: CONFIG.TELEGRAM_CHAT_ID, text: message, parse_mode: "HTML", disable_web_page_preview: false });
-  return new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: "api.telegram.org",
-      path: `/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`,
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
-    }, (res) => { let data = ""; res.on("data", (c) => (data += c)); res.on("end", () => resolve(JSON.parse(data))); });
-    req.on("error", reject);
-    req.write(body);
-    req.end();
+// ── Telegram ──────────────────────────────────────────────────────────────────
+async function sendTelegram(message) {
+  const res = await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: CONFIG.TELEGRAM_CHAT_ID, text: message, parse_mode: "HTML", disable_web_page_preview: false }),
   });
+  return res.json();
 }
 
 // ── Ethereum helpers ──────────────────────────────────────────────────────────
 async function getLatestBlock() {
   const res = await rpc("eth_blockNumber");
-  console.log("📦 eth_blockNumber response:", JSON.stringify(res).slice(0, 80));
+  console.log("📦 RPC response:", JSON.stringify(res).slice(0, 80));
   return parseInt(res.result, 16);
 }
 
@@ -100,7 +75,7 @@ function getNFTStandard(bytecode) {
 async function scan() {
   try {
     const latestBlock = await getLatestBlock();
-    if (isNaN(latestBlock)) { console.error("❌ Could not get block number - RPC may be down"); return; }
+    if (isNaN(latestBlock)) { console.error("❌ Could not get block number"); return; }
 
     if (!lastScannedBlock) {
       lastScannedBlock = latestBlock - CONFIG.BLOCKS_PER_SCAN;
@@ -157,7 +132,7 @@ async function start() {
   console.log("━".repeat(50));
   console.log("  🤖 NFT Collection Watcher Bot");
   console.log("━".repeat(50));
-  console.log(`  RPC           : ${CONFIG.RPC_URL}`);
+  console.log(`  RPC           : cloudflare-eth.com`);
   console.log(`  Poll interval : ${CONFIG.POLL_INTERVAL_MS / 1000}s`);
   console.log(`  Blocks/scan   : ${CONFIG.BLOCKS_PER_SCAN}`);
   console.log("━".repeat(50));
