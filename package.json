@@ -1,5 +1,13 @@
 {
+  "name": "nft-watcher",
+  "version": "1.0.0",
+  "description": "NFT Collection Watcher Bot",
+  "main": "bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js"
+  },
   "dependencies": {
-    "dotenv": "^17.4.2"
+    "dotenv": "^16.0.0"
   }
 }
