@@ -11,6 +11,11 @@ const CONFIG = {
   BLOCKS_PER_SCAN: 5,
 };
 
+// DEBUG - shows what keys Railway can see (safe - only shows first 6 chars)
+console.log("🔑 ETHERSCAN_API_KEY:", CONFIG.ETHERSCAN_API_KEY ? CONFIG.ETHERSCAN_API_KEY.slice(0,6) + "..." : "❌ NOT FOUND");
+console.log("🔑 TELEGRAM_BOT_TOKEN:", CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_BOT_TOKEN.slice(0,6) + "..." : "❌ NOT FOUND");
+console.log("🔑 TELEGRAM_CHAT_ID:", CONFIG.TELEGRAM_CHAT_ID || "❌ NOT FOUND");
+
 const NFT_SIGNATURES = { ERC721: "80ac58cd", ERC1155: "d9b67a26" };
 let lastScannedBlock = null;
 const notifiedContracts = new Set();
