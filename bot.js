@@ -5,20 +5,23 @@ config();
 const CONFIG = {
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
+  ALCHEMY_API_KEY: process.env.ALCHEMY_API_KEY,
   POLL_INTERVAL_MS: 20000,
   BLOCKS_PER_SCAN: 3,
 };
 
 console.log("🔑 TELEGRAM_BOT_TOKEN:", CONFIG.TELEGRAM_BOT_TOKEN ? CONFIG.TELEGRAM_BOT_TOKEN.slice(0,6) + "..." : "❌ NOT FOUND");
 console.log("🔑 TELEGRAM_CHAT_ID:", CONFIG.TELEGRAM_CHAT_ID || "❌ NOT FOUND");
+console.log("🔑 ALCHEMY_API_KEY:", CONFIG.ALCHEMY_API_KEY ? CONFIG.ALCHEMY_API_KEY.slice(0,6) + "..." : "❌ NOT FOUND");
+
+const RPC_URL = `https://eth-mainnet.g.alchemy.com/v2/${CONFIG.ALCHEMY_API_KEY}`;
 
 const NFT_SIGNATURES = { ERC721: "80ac58cd", ERC1155: "d9b67a26" };
 let lastScannedBlock = null;
 const notifiedContracts = new Set();
 
-// ── fetch-based RPC (works on Railway) ───────────────────────────────────────
 async function rpc(method, params = []) {
-  const res = await fetch("https://cloudflare-eth.com/v1/mainnet", {
+  const res = await fetch(RPC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
@@ -26,7 +29,6 @@ async function rpc(method, params = []) {
   return res.json();
 }
 
-// ── Telegram ──────────────────────────────────────────────────────────────────
 async function sendTelegram(message) {
   const res = await fetch(`https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
@@ -36,7 +38,6 @@ async function sendTelegram(message) {
   return res.json();
 }
 
-// ── Ethereum helpers ──────────────────────────────────────────────────────────
 async function getLatestBlock() {
   const res = await rpc("eth_blockNumber");
   console.log("📦 RPC response:", JSON.stringify(res).slice(0, 80));
@@ -71,7 +72,6 @@ function getNFTStandard(bytecode) {
   return s.join(" + ");
 }
 
-// ── Main scan ─────────────────────────────────────────────────────────────────
 async function scan() {
   try {
     const latestBlock = await getLatestBlock();
@@ -127,12 +127,11 @@ async function scan() {
   }
 }
 
-// ── Start ─────────────────────────────────────────────────────────────────────
 async function start() {
   console.log("━".repeat(50));
   console.log("  🤖 NFT Collection Watcher Bot");
   console.log("━".repeat(50));
-  console.log(`  RPC           : cloudflare-eth.com`);
+  console.log(`  RPC           : Alchemy`);
   console.log(`  Poll interval : ${CONFIG.POLL_INTERVAL_MS / 1000}s`);
   console.log(`  Blocks/scan   : ${CONFIG.BLOCKS_PER_SCAN}`);
   console.log("━".repeat(50));
