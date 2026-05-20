@@ -20,9 +20,11 @@ const CONFIG = {
   POLL_INTERVAL_MS:        20000,
   BLOCKS_PER_SCAN:         3,
   HOT_CONTRACT_CALLS:      30,
-  GAS_SPIKE_MULTIPLIER:    2.5,
   FLOOR_CHECK_INTERVAL_MS: 3600000,  // check floor price every 1 hour
   FLOOR_ALERT_ETH:         0.05,     // alert when floor crosses this
+
+  // Filtering
+  MAX_RUG_SCORE: 70,          // only alert if rug score is at or below this
 
   // Influencer / watched wallets
   WATCHED_WALLETS: [
@@ -57,11 +59,9 @@ const MARKETPLACES = new Set([
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let lastScannedBlock       = null;
-let avgGasPrice            = null;
 const notifiedContracts    = new Set();
 const notifiedTxs          = new Set();
 const notifiedHotContracts = new Set();
-const notifiedGasSpikes    = new Set();
 const mintedContracts      = new Set();
 const watchedWallets       = new Set(CONFIG.WATCHED_WALLETS.map(w => w.toLowerCase()));
 const floorWatchList       = new Map(); // contractAddress -> { name, lastFloor }
@@ -476,7 +476,27 @@ async function alertNewNFT(tx, receipt, block) {
     `<a href="https://opensea.io/assets/ethereum/${contractAddress}">OpenSea</a>  |  ` +
     `<a href="https://etherscan.io/address/${tx.from}">Deployer</a>`;
 
-  console.log(`🎨 NFT: ${collName} | ${priceLabel} | Risk: ${rugRisk.riskLevel}`);
+
+  const nftMintSteps =
+    `\n${"─".repeat(32)}\n` +
+    `🪙 <b>HOW TO MINT</b>\n\n` +
+    `<b>Option 1 — Etherscan (Safest)</b>\n` +
+    `1. Click Etherscan link below\n` +
+    `2. Go to Contract → Write Contract\n` +
+    `3. Connect MetaMask wallet\n` +
+    `4. Find mint/claim function\n` +
+    `5. Set ETH value to ${isFree ? "0" : mintPriceEth} ETH → Write\n\n` +
+    `<b>Option 2 — Project Website</b>\n` +
+    `1. Visit the project website\n` +
+    `2. Connect wallet → click Mint\n` +
+    `3. Confirm in MetaMask\n\n` +
+    `⚠️ Always verify contract address matches\n` +
+    `⚠️ ${isFree ? "Free mint — only pay gas (0.01–0.05 ETH)" : "Mint price: " + mintPriceEth + " ETH + gas"}`;
+  console.log(`🎨 NFT: ${collName} | ${priceLabel} | Risk: ${rugRisk.riskLevel} (score: ${rugRisk.score})`);
+  if (rugRisk.score > CONFIG.MAX_RUG_SCORE) {
+    console.log(`   ⛔ Filtered out — score ${rugRisk.score} exceeds limit of ${CONFIG.MAX_RUG_SCORE}`);
+    return;
+  }
   await sendTelegram(msg);
 }
 
@@ -531,7 +551,29 @@ async function alertFreeMint(tx, receipt, block) {
     `🔗 <a href="https://etherscan.io/address/${contractAddress}">Etherscan</a>  |  ` +
     `<a href="https://opensea.io/assets/ethereum/${contractAddress}">OpenSea</a>`;
 
-  console.log(`🆓 FREE MINT: ${collName} | Risk: ${rugRisk.riskLevel} | ${minted}/${maxS}`);
+
+  const mintSteps =
+    `\n${"─".repeat(32)}\n` +
+    `🪙 <b>HOW TO MINT</b>\n\n` +
+    `<b>Option 1 — Etherscan (Safest)</b>\n` +
+    `1. Click Etherscan link below\n` +
+    `2. Go to Contract → Write Contract\n` +
+    `3. Click Connect to Web3 → connect MetaMask\n` +
+    `4. Find <code>${fnName}</code> → set value to 0 ETH\n` +
+    `5. Click Write → confirm in MetaMask\n\n` +
+    `<b>Option 2 — Direct (Fastest)</b>\n` +
+    `1. Open MetaMask → Send\n` +
+    `2. To: <code>${contractAddress}</code>\n` +
+    `3. Amount: 0 ETH\n` +
+    `4. Hex data: <code>0x${sig}</code>\n` +
+    `5. Confirm\n\n` +
+    `⚠️ Have 0.01–0.05 ETH for gas fees\n` +
+    `⚠️ Never send more than 0 ETH for a free mint`;
+  console.log(`🆓 FREE MINT: ${collName} | Risk: ${rugRisk.riskLevel} (score: ${rugRisk.score}) | ${minted}/${maxS}`);
+  if (rugRisk.score > CONFIG.MAX_RUG_SCORE) {
+    console.log(`   ⛔ Filtered out — score ${rugRisk.score} exceeds limit of ${CONFIG.MAX_RUG_SCORE}`);
+    return;
+  }
   await sendTelegram(msg);
 
   // Trigger auto-mint if enabled and risk is acceptable
@@ -586,261 +628,4 @@ async function alertHotContract(contractCallMap, block) {
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  ⛽ ALERT: GAS SPIKE
-// ══════════════════════════════════════════════════════════════════════════════
-async function checkGasSpike(block) {
-  const prices = block.transactions.map(tx => parseInt(tx.gasPrice || tx.maxFeePerGas || "0", 16)).filter(g => g > 0);
-  if (!prices.length) return;
-  const blockAvg = prices.reduce((a,b) => a+b, 0) / prices.length / 1e9;
-  if (!avgGasPrice) { avgGasPrice = blockAvg; return; }
-  avgGasPrice = avgGasPrice * 0.9 + blockAvg * 0.1;
-  const ratio = blockAvg / avgGasPrice;
-  const key   = block.number + "_gas";
-  if (ratio >= CONFIG.GAS_SPIKE_MULTIPLIER && !notifiedGasSpikes.has(key)) {
-    notifiedGasSpikes.add(key);
-    await sendTelegram(
-      `⛽ <b>GAS SPIKE — Something Big is Minting!</b>\n` +
-      `${"─".repeat(32)}\n` +
-      `📈 <b>Current Gas:</b> ${blockAvg.toFixed(1)} Gwei\n` +
-      `📊 <b>Rolling Avg:</b> ${avgGasPrice.toFixed(1)} Gwei\n` +
-      `🔺 <b>Spike:</b> ${ratio.toFixed(1)}x above average\n` +
-      `📦 <b>Block:</b> ${parseInt(block.number, 16)}\n` +
-      `🕐 <b>Time:</b> ${fmtTime(block.timestamp)}\n\n` +
-      `💡 A hyped free mint or NFT drop is likely live right now!\n\n` +
-      `🔗 <a href="https://etherscan.io/block/${parseInt(block.number,16)}">View Block</a>  |  ` +
-      `<a href="https://etherscan.io/gastracker">Gas Tracker</a>`
-    );
-    console.log(`⛽ Gas spike: ${blockAvg.toFixed(1)} Gwei (${ratio.toFixed(1)}x)`);
-  }
-}
 
-
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  ⏳ PRE-MINT DETECTOR
-//  Catches NFT contracts where mint exists but isn't open yet
-//  Gives you time to get whitelisted before the rush
-// ══════════════════════════════════════════════════════════════════════════════
-
-// Known "mint not started" patterns in bytecode / state checks
-const MINT_OPEN_SIGS = {
-  "mintingActive()":   "0x6c4e793d",
-  "saleIsActive()":    "0x80b4f93a",
-  "publicSaleActive()":"0x9291a731",
-  "mintEnabled()":     "0x5e84d723",
-  "paused()":          "0x5c975abb",
-};
-
-// Whitelist/presale function signatures — means WL window may be open
-const PRESALE_SIGS = {
-  "presaleMint(uint256)":     "0x5e826c3c",
-  "whitelistMint(uint256)":   "0x8a4bdf13",
-  "allowlistMint(uint256)":   "0x7e56b236",
-  "preSaleMint()":            "0xd04f1e65",
-  "mintWhitelist(uint256)":   "0x83a9e049",
-  "claimAllowlist()":         "0xbde2b0c3",
-};
-
-const preMintNotified = new Set();
-
-async function detectPreMint(contractAddress, bytecode, block) {
-  if (preMintNotified.has(contractAddress)) return;
-
-  const code = bytecode.toLowerCase();
-
-  // Must have NFT signatures
-  if (!isNFT(bytecode)) return;
-
-  // Must have a mint function signature present
-  const hasMintFn = Object.values(FREE_MINT_SIGS).some(s => code.includes(s));
-  const hasPresaleFn = Object.values(PRESALE_SIGS).some((s) => code.includes(s.slice(2)));
-  if (!hasMintFn && !hasPresaleFn) return;
-
-  // Check if mint is currently inactive / paused
-  let mintActive = null;
-  let isPaused   = null;
-
-  try {
-    // Try paused()
-    const pausedRes = await rpc("eth_call", [{ to: contractAddress, data: "0x5c975abb" }, "latest"]);
-    if (pausedRes.result && pausedRes.result !== "0x") {
-      isPaused = parseInt(pausedRes.result, 16) === 1;
-    }
-  } catch {}
-
-  try {
-    // Try saleIsActive()
-    const saleRes = await rpc("eth_call", [{ to: contractAddress, data: "0x80b4f93a" }, "latest"]);
-    if (saleRes.result && saleRes.result !== "0x") {
-      mintActive = parseInt(saleRes.result, 16) === 1;
-    }
-  } catch {}
-
-  // If mint is explicitly active — not a pre-mint, skip
-  if (mintActive === true) return;
-
-  // If paused or mint not active — this is a pre-mint!
-  const isPreMint = isPaused === true || mintActive === false;
-  const hasPresale = hasPresaleFn;
-
-  // Only alert if we have a clear signal
-  if (!isPreMint && !hasPresale) return;
-
-  preMintNotified.add(contractAddress);
-
-  const [name, symbol, maxSupply, price, etherscanInfo] = await Promise.all([
-    callContract(contractAddress, "name()"),
-    callContract(contractAddress, "symbol()"),
-    callContract(contractAddress, "maxSupply()"),
-    callContract(contractAddress, "price()"),
-    getEtherscanInfo(contractAddress),
-  ]);
-
-  const collName     = etherscanInfo?.name || name || "Unknown";
-  const mintPriceEth = price ? (price / 1e18).toFixed(4) : "TBA";
-  const isFree       = mintPriceEth === "0.0000";
-  const priceLabel   = isFree ? "🆓 FREE" : mintPriceEth === "TBA" ? "TBA" : `${mintPriceEth} ETH`;
-
-  const [socials, rugRisk, reputation] = await Promise.all([
-    findSocialLinks(contractAddress, collName),
-    analyzeRugRisk(contractAddress, "0x0000000000000000000000000000000000000000", bytecode, etherscanInfo),
-    getDeployerReputation(contractAddress),
-  ]);
-
-  const twitterLine  = socials.twitter.length ? `🐦 <b>Twitter:</b> ${socials.twitter.map(t => `<a href="${t}">@${t.split("/").pop()}</a>`).join(" | ")}\n` : "";
-  const discordLine  = socials.discord.length ? `💬 <b>Discord:</b> ${socials.discord.map(d => `<a href="${d}">Join Server</a>`).join(" | ")}\n` : "";
-  const websiteLine  = socials.website ? `🌐 <b>Website:</b> <a href="${socials.website}">${socials.website}</a>\n` : "";
-  const noSocials    = !twitterLine && !discordLine && !websiteLine ? `🔍 <i>No socials found yet — search the contract on Twitter</i>\n` : "";
-
-  const statusLine = isPaused
-    ? "⏸ Mint is PAUSED — not open yet"
-    : hasPresale
-    ? "🎟 Presale/Whitelist mint function detected"
-    : "⏳ Public mint not yet active";
-
-  const actionItems = [
-    socials.discord.length ? `✅ Join their Discord: ${socials.discord[0]}` : "🔍 Find & join their Discord (search contract on Twitter)",
-    socials.twitter.length ? `✅ Follow & engage on Twitter: ${socials.twitter[0]}` : "🔍 Find & follow on Twitter",
-    "💬 Introduce yourself in Discord — be active",
-    "🔔 Watch for whitelist raffle announcements",
-    hasPresale ? "⚡ Presale mint function exists — ask about WL requirements" : "⏰ Monitor for when public mint opens",
-  ].join("\n");
-
-  const msg =
-    `⏳ <b>PRE-MINT DETECTED — Whitelist Window!</b>\n` +
-    `${"─".repeat(32)}\n` +
-    `📛 <b>Name:</b> ${collName}\n` +
-    `🏷 <b>Symbol:</b> ${symbol ? `${symbol}` : "TBA"}\n` +
-    `🔖 <b>Standard:</b> ${getNFTStd(bytecode)}\n` +
-    `💰 <b>Mint Price:</b> ${priceLabel}\n` +
-    `🔢 <b>Max Supply:</b> ${maxSupply ? Number(maxSupply).toLocaleString() : "TBA"}\n` +
-    `📊 <b>Status:</b> ${statusLine}\n\n` +
-    `${"─".repeat(32)}\n` +
-    `🌍 <b>Socials</b>\n` +
-    websiteLine + twitterLine + discordLine + noSocials + `\n` +
-    `${"─".repeat(32)}\n` +
-    `${rugRisk.riskEmoji} <b>Rug Risk: ${rugRisk.riskLevel}</b>\n` +
-    `${rugRisk.flags.length ? rugRisk.flags.join("\n") + "\n" : ""}\n` +
-    `${"─".repeat(32)}\n` +
-    `📋 <b>YOUR ACTION PLAN:</b>\n${actionItems}\n\n` +
-    `🔑 <b>Contract:</b>\n<code>${contractAddress}</code>\n\n` +
-    `🔗 <a href="https://etherscan.io/address/${contractAddress}">Etherscan</a>  |  ` +
-    `<a href="https://opensea.io/assets/ethereum/${contractAddress}">OpenSea</a>`;
-
-  console.log(`⏳ PRE-MINT: ${collName} | Price: ${priceLabel} | Risk: ${rugRisk.riskLevel}`);
-  await sendTelegram(msg);
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  MAIN SCAN LOOP
-// ══════════════════════════════════════════════════════════════════════════════
-async function scan() {
-  try {
-    const latestBlock = await getLatestBlock();
-    if (isNaN(latestBlock)) { console.error("❌ Could not get block number"); return; }
-    if (!lastScannedBlock) { lastScannedBlock = latestBlock - CONFIG.BLOCKS_PER_SCAN; console.log(`🚀 Starting from block ${lastScannedBlock}`); }
-    if (latestBlock <= lastScannedBlock) return;
-
-    const fromBlock = lastScannedBlock + 1;
-    const toBlock   = Math.min(latestBlock, lastScannedBlock + CONFIG.BLOCKS_PER_SCAN);
-    console.log(`🔍 Scanning blocks ${fromBlock} → ${toBlock}`);
-
-    for (let blockNum = fromBlock; blockNum <= toBlock; blockNum++) {
-      const block = await getBlock(blockNum);
-      if (!block?.transactions) continue;
-      console.log(`   Block ${blockNum}: ${block.transactions.length} txs`);
-
-      await checkGasSpike(block);
-
-      const contractCallMap = {};
-
-      for (const tx of block.transactions) {
-        const ethValue   = parseFloat(weiToEth(tx.value));
-        const isCreation = !tx.to || tx.to === "0x0000000000000000000000000000000000000000";
-        const isWatched  = watchedWallets.has(tx.from.toLowerCase()) || watchedWallets.has((tx.to||"").toLowerCase());
-
-        if (tx.to) {
-          if (!contractCallMap[tx.to.toLowerCase()]) contractCallMap[tx.to.toLowerCase()] = [];
-          contractCallMap[tx.to.toLowerCase()].push(tx);
-        }
-
-        const needsReceipt = isCreation || isWatched;
-        let receipt = null;
-        if (needsReceipt) receipt = await getTransactionReceipt(tx.hash);
-
-        if (isCreation && receipt)                        await alertNewNFT(tx, receipt, block);
-        if (isCreation && receipt?.contractAddress)      await detectPreMint(receipt.contractAddress, await getCode(receipt.contractAddress), block);
-        await alertFreeMint(tx, receipt, block);
-
-        await new Promise(r => setTimeout(r, 30));
-      }
-
-      await alertHotContract(contractCallMap, block);
-    }
-
-    lastScannedBlock = toBlock;
-  } catch (err) { console.error("⚠️  Scan error:", err.message); }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  START
-// ══════════════════════════════════════════════════════════════════════════════
-async function start() {
-  console.log("━".repeat(50));
-  console.log("  🤖 NFT Alpha Bot — Full Money Edition");
-  console.log("━".repeat(50));
-  console.log(`  Auto-mint          : ${CONFIG.AUTO_MINT_ENABLED ? "✅ ON" : "❌ OFF"}`);
-  console.log(`  Hot contract calls : ${CONFIG.HOT_CONTRACT_CALLS}/block`);
-  console.log(`  Gas spike          : ${CONFIG.GAS_SPIKE_MULTIPLIER}x`);
-  console.log(`  Floor alert        : ${CONFIG.FLOOR_ALERT_ETH} ETH`);
-  console.log(`  Watched wallets    : ${watchedWallets.size}`);
-  console.log("━".repeat(50));
-
-  await sendTelegram(
-    `🤖 <b>NFT Alpha Bot — Full Money Edition!</b>\n` +
-    `${"─".repeat(32)}\n` +
-    `Now tracking:\n\n` +
-    `🎨 New NFT deployments\n` +
-    `🆓 Free mint detector\n` +
-    `🔥 Hot contract alerts\n` +
-    `⛽ Gas spike alerts\n` +
-    `🔍 Rug pull detector\n` +
-    `⭐ Deployer reputation score\n` +
-    `📈 Floor price tracker (sell alerts)\n` +
-    `👁 Influencer wallet tracker\n` +
-    `⚡ Auto-mint: ${CONFIG.AUTO_MINT_ENABLED ? "ON ✅" : "OFF ❌"}\n` +
-    `⏳ Pre-mint whitelist detector\n\n` +
-    `Scanning Ethereum every ${CONFIG.POLL_INTERVAL_MS/1000}s 🚀`
-  );
-  console.log("✅ Bot started");
-
-  await scan();
-  setInterval(scan, CONFIG.POLL_INTERVAL_MS);
-
-  // Floor price checker runs every hour
-  setInterval(runFloorPriceChecks, CONFIG.FLOOR_CHECK_INTERVAL_MS);
-}
-
-start();
